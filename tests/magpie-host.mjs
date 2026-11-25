@@ -19,6 +19,7 @@ const home = path.join(directory, 'home');
 const config = path.join(directory, 'config/magpie');
 const fixture = path.join(directory, 'fixture');
 const captures = [];
+const userAgents = [];
 let mode = 'pass';
 let disconnected = false;
 let limited = 0;
@@ -34,6 +35,7 @@ const upstream = http.createServer(async (req, res) => {
   const text = Buffer.concat(chunks).toString();
   if (text.includes('_ag_relay_request')) { res.writeHead(400); return res.end('internal request marker leaked'); }
   captures.push({ caller: req.headers['fixture-caller'], enabled: req.headers['fixture-enabled'], path: req.url });
+  userAgents.push(req.headers['user-agent']);
   if (mode === 'hang') { res.once('close', () => { disconnected = true; }); return; }
   if (mode === 'rate' || (mode === 'recover' && ++limited <= 2)) {
     res.writeHead(429, { 'content-type': 'application/json', 'retry-after': '1' });
@@ -111,20 +113,26 @@ try {
     const response = await post(ua);
     assert.equal(response.status,200,await response.text());
     assert.deepEqual(captures.slice(before),[{ caller:agent, enabled:'true', path:'/v1/responses' }]);
+    assert.equal(userAgents.at(-1),ua);
     console.log(`PASS: ${agent} Responses, one upstream attempt`);
   }
+  const generic = await post('magpie/0.1.4777');
+  assert.equal(generic.status,200,await generic.text());
+  assert.equal(userAgents.at(-1),'magpie/0.1.4777');
   const beforeMessages = captures.length;
   const messages = await fetch(`http://${addr}/v1/messages`,{ method:'POST',headers:{'content-type':'application/json','anthropic-version':'2023-06-01','user-agent':'claude-cli/1.0'},body:JSON.stringify({model:'agentrouter-relay/fixture-native',max_tokens:64,messages:[{role:'user',content:'fixture'}]}),signal:AbortSignal.timeout(15000) });
   const messageText = await messages.text();
   assert.equal(messages.status,200,`${JSON.stringify(captures.slice(beforeMessages))} ${messageText}`);
   assert.match(messageText,/fixture OK/);
   assert.deepEqual(captures.slice(beforeMessages),[{caller:'claude',enabled:'true',path:'/v1/messages'}]);
+  assert.equal(userAgents.at(-1),'claude-cli/1.0');
   console.log('PASS: native Claude Messages reached /v1/messages');
   mode = 'recover';
   const beforeRecover = captures.length;
   const recovered = await post('codex_cli_rs/1.0');
   assert.equal(recovered.status,200,await recovered.text());
   assert.equal(captures.length-beforeRecover,3);
+  assert.deepEqual(userAgents.slice(beforeRecover),Array(3).fill('codex_cli_rs/1.0'));
   console.log('PASS: two rate limits then success, three actual sends');
   mode = 'rate';
   const beforeCap = captures.length;

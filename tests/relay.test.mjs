@@ -128,15 +128,27 @@ for(const [name,event] of [['text',textEvent],['tool',toolEvent]]) test(`${name}
 
 test('balance is optional and uses the site credential, never the model key',async () => {
   assert.equal(balanceMethod.prompts[1].type,'password');
-  assert.deepEqual(await readBalance('https://example.invalid/v1',{type:'api',key:'model'}),{windows:[]});
-  let captured;
-  const server=http.createServer((req,res)=>{ captured=[req.url,req.headers.authorization,req.headers['new-api-user']];res.end(JSON.stringify({success:true,data:{quota:625000}})); });
+  assert.deepEqual(await readBalance('https://example.invalid/v1',{type:'api',key:'model'}),{balance:'未配置余额查询',windows:[]});
+  let captured, quota=625000;
+  const server=http.createServer((req,res)=>{ captured=[req.url,req.headers.authorization,req.headers['new-api-user']];res.end(JSON.stringify({success:true,data:{quota}})); });
   server.listen(0,'127.0.0.1'); await once(server,'listening');
   try {
     const {metadata}=await balanceMethod.authorize({userId:'42',balanceToken:'site-only'});
     assert.equal((await readBalance(`http://127.0.0.1:${server.address().port}/v1`,{key:'model',metadata})).balance,'$1.25');
     assert.deepEqual(captured,['/api/user/self','site-only','42']);
+    quota=0;
+    assert.equal((await readBalance(`http://127.0.0.1:${server.address().port}/v1`,{metadata})).balance,'$0.00');
+    quota=null;
+    assert.equal((await readBalance(`http://127.0.0.1:${server.address().port}/v1`,{metadata})).balance,'查询失败');
   } finally { server.closeAllConnections(); await new Promise(resolve=>server.close(resolve)); }
+});
+
+test('a shorter per-request retry budget does not wait past a Retry-After',async () => {
+  let sends=0;
+  const relay=createTransport(async()=>{ sends++; return sends===1 ? error(429,'rate_limit_exceeded','busy',{'retry-after':'2'}) : ok(); });
+  const answer=await relay(client(modelBody,[randomUUID(),1]),{caller:'codex',retryRateLimit:true,retryBudgetMs:1000});
+  assert.equal(answer.status,429);
+  assert.equal(sends,1);
 });
 
 test('unknown SSE output cannot be discarded and replayed',async () => {
