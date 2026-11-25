@@ -1,6 +1,6 @@
 {
   "name": "magpie-agentrouter-relay",
-  "version": "0.1.0-rc.2",
+  "version": "0.1.0-rc.3",
   "private": true,
   "description": "AgentRouter 单账号 Magpie Provider",
   "repository": {"type":"git","url":"git+https://github.com/xinxinxiaoxin/magpie-agentrouter-relay.git"},

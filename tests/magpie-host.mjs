@@ -89,14 +89,8 @@ try {
     for (const file of ['lib','package.json','relay.middleware.mjs']) await cp(path.join(root,file),path.join(fixture,file),{recursive:true});
   }
   await writeFile(path.join(fixture,'provider.mjs'), `import {createProvider} from './lib/provider.mjs'; import {createTransport} from './lib/transport.mjs'; const relay=createTransport(fetch,{maxAttempts:3}); export default createProvider('http://127.0.0.1:${fixturePort}/v1', (request, context) => { request.headers.set('fixture-caller',context.caller); request.headers.set('fixture-enabled',String(context.retryRateLimit)); return relay(request,context); });`);
-  await json(path.join(config,'plugin-auth.json'), { 'agentrouter-relay': { type:'api', key:'fixture-only', metadata:{userId:'42',balanceToken:'fixture-site-token'} } });
   await json(path.join(config,'settings.json'), { sessionReads: { asked:true, all:false, agents:{} } });
   await cli('plugin','add',fixture);
-  const listed = JSON.parse(await cli('plugin','--json'));
-  const added = listed.providers?.find(provider => provider.id === 'agentrouter-relay');
-  assert.ok(added?.models?.some(model => model.id === 'fixture-model'), `Provider discovery: ${JSON.stringify(listed).slice(0,1500)}`);
-  assert.ok(added.models.find(model => model.id === 'fixture-model')?.also?.includes('@ai-sdk/anthropic'), JSON.stringify(added.models));
-  assert.equal(added.options.find(option => option.key === 'retry-rate-limit')?.default, true);
   gateway = spawn(magpie,['serve',`--web=${new URL(web).host}`], { cwd:directory, env, windowsHide:true, stdio:['ignore','pipe','pipe'] });
   ended = once(gateway,'close');
   for (const stream of [gateway.stdout,gateway.stderr]) stream.on('data',chunk => { log = (log + chunk).slice(-3000); });
@@ -104,6 +98,27 @@ try {
     try { await (await fetch(`http://${addr}`, { signal:AbortSignal.timeout(300) })).text(); break; } catch { await delay(100); }
     assert.equal(gateway.exitCode,null,log);
   }
+  const login = await fetch(`${web}/?k=${env.MAGPIE_WEB_KEY}`,{ redirect:'manual' });
+  const cookie = login.headers.getSetCookie()[0]?.split(';')[0];
+  assert.ok(cookie,'Isolated settings page did not establish a session');
+  const signin = async (suffix, fields) => {
+    const response = await fetch(`${web}/api/plugin-signin${suffix}`,{method:'POST',headers:{cookie,origin:web,'content-type':'application/json'},body:JSON.stringify({provider:'agentrouter-relay',method:1,...fields})});
+    const text = await response.text();
+    assert.equal(response.status,200,text);
+    return JSON.parse(text);
+  };
+  let step = await signin('/prompt',{inputs:{}});
+  for (const [key,value] of [['modelKey','fixture-only'],['userId','42'],['balanceToken','fixture-site-token']]) {
+    assert.equal(step.prompt?.key,key);
+    step = await signin('/prompt',{inputs:step.inputs,key,value});
+  }
+  assert.ok(!step.prompt);
+  assert.equal((await signin('',{inputs:step.inputs})).state,'done');
+  const listed = JSON.parse(await cli('plugin','--json'));
+  const added = listed.providers?.find(provider => provider.id === 'agentrouter-relay');
+  assert.ok(added?.models?.some(model => model.id === 'fixture-model'), `Provider discovery: ${JSON.stringify(listed).slice(0,1500)}`);
+  assert.ok(added.models.find(model => model.id === 'fixture-model')?.also?.includes('@ai-sdk/anthropic'), JSON.stringify(added.models));
+  assert.equal(added.options.find(option => option.key === 'retry-rate-limit')?.default, true);
   const quota = await cli('quota','agentrouter-relay','--json');
   assert.match(quota,/\$1\.25/,'Expected the fixture account balance via the Magpie quota interface');
   console.log('PASS: Magpie reports the isolated account balance using the separate site credential');
@@ -151,9 +166,6 @@ try {
   for (let attempts = 0; !disconnected && attempts < 80; attempts++) await delay(50);
   assert.ok(disconnected,'Cancelling the client did not disconnect the fixture');
   console.log('PASS: client cancellation closed the upstream request');
-  const login = await fetch(`${web}/?k=${env.MAGPIE_WEB_KEY}`,{ redirect:'manual' });
-  const cookie = login.headers.getSetCookie()[0]?.split(';')[0];
-  assert.ok(cookie,'Isolated settings page did not establish a session');
   const save = await fetch(`${web}/api/settings/plugin-option`, { method:'POST', headers:{ cookie,origin:web,'content-type':'application/json' },body:JSON.stringify({provider:'agentrouter-relay',key:'retry-rate-limit',on:false}) });
   assert.equal(save.status,200,await save.text());
   mode = 'pass';

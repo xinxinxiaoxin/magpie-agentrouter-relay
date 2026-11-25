@@ -126,14 +126,20 @@ for(const [name,event] of [['text',textEvent],['tool',toolEvent]]) test(`${name}
   assert.equal(run.sent.length,1);
 });
 
+test('balance sign-in asks for and returns the separate model key',async () => {
+  assert.deepEqual(balanceMethod.prompts.map(({key,type})=>[key,type]),[['modelKey','password'],['userId','text'],['balanceToken','password']]);
+  const inputs={userId:'42',balanceToken:'site-only'};
+  assert.equal((await balanceMethod.authorize(inputs)).type,'failed');
+  assert.deepEqual(await balanceMethod.authorize({...inputs,modelKey:'model'}),{type:'success',key:'model',metadata:inputs});
+});
+
 test('balance is optional and uses the site credential, never the model key',async () => {
-  assert.equal(balanceMethod.prompts[1].type,'password');
   assert.deepEqual(await readBalance('https://example.invalid/v1',{type:'api',key:'model'}),{balance:'未配置余额查询',windows:[]});
   let captured, quota=625000;
   const server=http.createServer((req,res)=>{ captured=[req.url,req.headers.authorization,req.headers['new-api-user']];res.end(JSON.stringify({success:true,data:{quota}})); });
   server.listen(0,'127.0.0.1'); await once(server,'listening');
   try {
-    const {metadata}=await balanceMethod.authorize({userId:'42',balanceToken:'site-only'});
+    const {metadata}=await balanceMethod.authorize({modelKey:'model',userId:'42',balanceToken:'site-only'});
     assert.equal((await readBalance(`http://127.0.0.1:${server.address().port}/v1`,{key:'model',metadata})).balance,'$1.25');
     assert.deepEqual(captured,['/api/user/self','site-only','42']);
     quota=0;

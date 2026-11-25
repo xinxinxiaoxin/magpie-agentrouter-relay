@@ -13,7 +13,7 @@ magpie plugin add github:xinxinxiaoxin/magpie-agentrouter-relay
 ```
 
 1. 图形界面入口：**插件 → 发现 → 非官方插件 · GitHub**，搜索 `AG Relay`。保持喜鹊内置的 Middleware 功能开启。
-2. 在喜鹊找到 **AgentRouter · AG Relay**，选择 **AgentRouter API Key** 登录，填模型 Key。旧提供商不用删除。需要账户余额时改选第二种登录方式，再提供用户 ID 和系统访问令牌。该令牌只用于本站 `/api/user/self`，不用于模型转发；只聊天不需要它。
+2. 在喜鹊找到 **AgentRouter · AG Relay**。只聊天就选 **AgentRouter API Key**，填模型 Key。还要查余额就选 **API Key + 可选账户余额**，依次填 **模型 API Key → AgentRouter 用户 ID → 系统访问令牌**。已有模型 Key 可以继续用，旧提供商不用删除。系统访问令牌只用于本站 `/api/user/self`，不用于模型转发。
 3. 在一条新对话中选择 `agentrouter-relay/模型名`。先试短回复、工具调用和长会话续聊，再考虑替换日常线路。切回旧提供商即可回退；安装插件不等于切换现有对话。
 
 **客户端 UA 自动透传。** 插件加载时为自己的供应商启用 `User-Agent` 透传。安装或更新后无需额外配置。模型请求和重试沿用本次请求的 UA；客户端没发 UA 时，照常使用宿主默认值，不拦截请求。查模型列表和余额不是客户端对话，不借用上一条请求的 UA。
@@ -51,7 +51,7 @@ Node.js 24：`npm test`。Windows x64 隔离宿主验证使用已安装的喜鹊
 node tests/magpie-host.mjs <magpie.exe> <bun.exe>
 node tests/parity.mjs <旧版的relay-retry-proxy.mjs>
 npm pack --pack-destination .
-node tests/magpie-host.mjs <magpie.exe> <bun.exe> ./magpie-agentrouter-relay-0.1.0-rc.2.tgz
+node tests/magpie-host.mjs <magpie.exe> <bun.exe> ./magpie-agentrouter-relay-0.1.0-rc.3.tgz
 ```
 
 `parity` 核对旧源码哈希后另起测试进程，两边使用同一回环假上游，比较发送次数、实际请求体和客户端输出。对照脚本不是运行依赖。宿主测试使用独立配置、假账号和随机回环端口；带归档时先验证原包无凭据加载，再使用测试专用入口，把同一份包内实现接到可观测的假上游。持续 429 用缩小到 3 次的预算验收两层重试是否相乘。
