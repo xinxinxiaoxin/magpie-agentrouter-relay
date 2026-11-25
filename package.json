@@ -1,0 +1,23 @@
+{
+  "name": "magpie-agentrouter-relay",
+  "version": "0.1.0-rc.1",
+  "private": true,
+  "description": "AgentRouter 单账号 Magpie Provider",
+  "repository": {"type":"git","url":"git+https://github.com/xinxinxiaoxin/magpie-agentrouter-relay.git"},
+  "homepage": "https://github.com/xinxinxiaoxin/magpie-agentrouter-relay#readme",
+  "type": "module",
+  "main": "./provider.mjs",
+  "license": "MIT",
+  "files": ["provider.mjs", "relay.middleware.mjs", "lib", "logo.png", "README.md", "LICENSE", "THIRD_PARTY_NOTICES.md"],
+  "magpie": {
+    "name":"AgentRouter · AG Relay",
+    "icon":"https://raw.githubusercontent.com/xinxinxiaoxin/magpie-agentrouter-relay/main/logo.png",
+    "summary": {
+      "en":"AgentRouter single-account provider with bounded retries, Responses history repair, Claude/Codex routing and optional balance reads.",
+      "zh":"AgentRouter 单账号 Provider：有界重试、Responses 历史修复、Claude/Codex 分流和可选余额查询。"
+    },
+    "middleware":"./relay.middleware.mjs"
+  },
+  "scripts": {"test": "node --test tests/*.test.mjs", "test:host": "node tests/magpie-host.mjs"},
+  "keywords": ["magpie-plugin", "opencode-plugin", "provider", "agentrouter"]
+}

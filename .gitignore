@@ -1,0 +1,4 @@
+.local-tools/
+.sandbox/
+node_modules/
+*.tgz
