@@ -20,16 +20,18 @@ const config = path.join(directory, 'config/magpie');
 const fixture = path.join(directory, 'fixture');
 const captures = [];
 const userAgents = [];
+const sentModels = [];
 let mode = 'pass';
 let disconnected = false;
 let limited = 0;
+let listRequests = 0;
 const upstream = http.createServer(async (req, res) => {
+  if (req.url === '/v1/models') { listRequests++; res.writeHead(401); return res.end(); }
   if (req.url === '/api/user/self') {
     if (req.headers.authorization !== 'fixture-site-token' || req.headers['new-api-user'] !== '42') { res.writeHead(401); return res.end(); }
     return res.end(JSON.stringify({success:true,data:{quota:625000}}));
   }
   if (req.headers.authorization !== 'Bearer fixture-only' || req.headers['new-api-user']) { res.writeHead(403); return res.end(); }
-  if (req.url === '/v1/models') return res.end(JSON.stringify({ data: [{ id: 'fixture-model', supported_endpoint_types:['openai-response','anthropic'] }, { id:'fixture-native', supported_endpoint_types:['anthropic'] }] }));
   const chunks = [];
   for await (const chunk of req) chunks.push(chunk);
   const text = Buffer.concat(chunks).toString();
@@ -41,18 +43,25 @@ const upstream = http.createServer(async (req, res) => {
     res.writeHead(429, { 'content-type': 'application/json', 'retry-after': '1' });
     return res.end(JSON.stringify({ error: { message: 'Too many requests', code: 'rate_limit_exceeded' } }));
   }
-  if (new URL(req.url,'http://localhost').pathname === '/v1/messages') {
-    res.writeHead(200, { 'content-type':'text/event-stream' });
+  if (req.url !== '/v1/responses') { res.writeHead(404); return res.end(); }
+  const {model,stream} = JSON.parse(text);
+  sentModels.push(model);
+  if (!['gpt-6.1-sol','fixture-model'].includes(model)) { res.writeHead(400); return res.end(); }
+  const item = { id:'msg_fixture',type:'message',role:'assistant',content:[{type:'output_text',text:'fixture OK'}] };
+  const response = {id:'resp_fixture',object:'response',status:'completed',model,output:[item]};
+  if (stream) {
+    res.writeHead(200,{'content-type':'text/event-stream'});
     const events = [
-      {type:'message_start',message:{id:'msg_fixture',type:'message',role:'assistant',model:'fixture-native',content:[],usage:{input_tokens:1,output_tokens:0}}},
-      {type:'content_block_start',index:0,content_block:{type:'text',text:''}},
-      {type:'content_block_delta',index:0,delta:{type:'text_delta',text:'fixture OK'}},
-      {type:'content_block_stop',index:0}, {type:'message_delta',delta:{stop_reason:'end_turn'},usage:{output_tokens:1}}, {type:'message_stop'},
+      {type:'response.created',response:{...response,status:'in_progress',output:[]}},
+      {type:'response.output_item.added',output_index:0,item:{...item,content:[]}},
+      {type:'response.content_part.added',output_index:0,content_index:0,part:{type:'output_text',text:''}},
+      {type:'response.output_text.delta',output_index:0,content_index:0,delta:'fixture OK'},
+      {type:'response.output_item.done',output_index:0,item}, {type:'response.completed',response},
     ];
-    return res.end(events.map(event => `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`).join(''));
+    return res.end(events.map(event=>`event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`).join(''));
   }
   res.writeHead(200, { 'content-type': 'application/json' });
-  res.end(JSON.stringify({ id: 'resp_fixture', object: 'response', status: 'completed', model: 'fixture-model', output: [{ type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'fixture OK' }] }] }));
+  res.end(JSON.stringify(response));
 });
 async function listen(server) {
   server.listen(0, '127.0.0.1');
@@ -90,6 +99,7 @@ try {
   }
   await writeFile(path.join(fixture,'provider.mjs'), `import {createProvider} from './lib/provider.mjs'; import {createTransport} from './lib/transport.mjs'; const relay=createTransport(fetch,{maxAttempts:3}); export default createProvider('http://127.0.0.1:${fixturePort}/v1', (request, context) => { request.headers.set('fixture-caller',context.caller); request.headers.set('fixture-enabled',String(context.retryRateLimit)); return relay(request,context); });`);
   await json(path.join(config,'settings.json'), { sessionReads: { asked:true, all:false, agents:{} } });
+  await json(path.join(config,'providers.json'), {providers:[{id:'agentrouter-relay',models:['gpt-6.1-sol','fixture-model']}]});
   await cli('plugin','add',fixture);
   gateway = spawn(magpie,['serve',`--web=${new URL(web).host}`], { cwd:directory, env, windowsHide:true, stdio:['ignore','pipe','pipe'] });
   ended = once(gateway,'close');
@@ -107,6 +117,20 @@ try {
     assert.equal(response.status,200,text);
     return JSON.parse(text);
   };
+  assert.equal((await signin('',{method:0,key:'fixture-only'})).state,'done');
+  assert.equal(listRequests,0,'API Key sign-in must not prefetch /v1/models');
+  for (const model of ['gpt-6.1-sol','fixture-model']) {
+    const before = captures.length;
+    const messages = await fetch(`http://${addr}/v1/messages`,{method:'POST',headers:{'content-type':'application/json','anthropic-version':'2023-06-01','user-agent':'claude-cli/1.0'},body:JSON.stringify({model:`agentrouter-relay/${model}`,max_tokens:64,messages:[{role:'user',content:'fixture'}]}),signal:AbortSignal.timeout(15000)});
+    const text = await messages.text();
+    assert.equal(messages.status,200,text);
+    assert.match(text,/fixture OK/);
+    assert.equal(JSON.parse(text).content[0].text,'fixture OK');
+    assert.equal(sentModels.at(-1),model);
+    assert.deepEqual(captures.slice(before),[{caller:'claude',enabled:'true',path:'/v1/responses'}]);
+    assert.equal(userAgents.at(-1),'claude-cli/1.0');
+  }
+  console.log('PASS: plain API key, Claude Messages to Responses, declared and hand-entered model IDs');
   let step = await signin('/prompt',{inputs:{}});
   for (const [key,value] of [['modelKey','fixture-only'],['userId','42'],['balanceToken','fixture-site-token']]) {
     assert.equal(step.prompt?.key,key);
@@ -116,9 +140,9 @@ try {
   assert.equal((await signin('',{inputs:step.inputs})).state,'done');
   const listed = JSON.parse(await cli('plugin','--json'));
   const added = listed.providers?.find(provider => provider.id === 'agentrouter-relay');
-  assert.ok(added?.models?.some(model => model.id === 'fixture-model'), `Provider discovery: ${JSON.stringify(listed).slice(0,1500)}`);
-  assert.ok(added.models.find(model => model.id === 'fixture-model')?.also?.includes('@ai-sdk/anthropic'), JSON.stringify(added.models));
+  assert.ok(added?.models?.some(model => model.id === 'gpt-6.1-sol'));
   assert.equal(added.options.find(option => option.key === 'retry-rate-limit')?.default, true);
+  assert.equal(added.options.find(option => option.key === 'forward-client-ua')?.default, true);
   const quota = await cli('quota','agentrouter-relay','--json');
   assert.match(quota,/\$1\.25/,'Expected the fixture account balance via the Magpie quota interface');
   console.log('PASS: Magpie reports the isolated account balance using the separate site credential');
@@ -134,14 +158,6 @@ try {
   const generic = await post('magpie/0.1.4777');
   assert.equal(generic.status,200,await generic.text());
   assert.equal(userAgents.at(-1),'magpie/0.1.4777');
-  const beforeMessages = captures.length;
-  const messages = await fetch(`http://${addr}/v1/messages`,{ method:'POST',headers:{'content-type':'application/json','anthropic-version':'2023-06-01','user-agent':'claude-cli/1.0'},body:JSON.stringify({model:'agentrouter-relay/fixture-native',max_tokens:64,messages:[{role:'user',content:'fixture'}]}),signal:AbortSignal.timeout(15000) });
-  const messageText = await messages.text();
-  assert.equal(messages.status,200,`${JSON.stringify(captures.slice(beforeMessages))} ${messageText}`);
-  assert.match(messageText,/fixture OK/);
-  assert.deepEqual(captures.slice(beforeMessages),[{caller:'claude',enabled:'true',path:'/v1/messages'}]);
-  assert.equal(userAgents.at(-1),'claude-cli/1.0');
-  console.log('PASS: native Claude Messages reached /v1/messages');
   mode = 'recover';
   const beforeRecover = captures.length;
   const recovered = await post('codex_cli_rs/1.0');
@@ -173,6 +189,11 @@ try {
   assert.equal(switched.status,200,await switched.text());
   assert.equal(captures.at(-1).enabled,'false');
   console.log('PASS: option updated without restarting the gateway');
+  const uaSave = await fetch(`${web}/api/settings/plugin-option`,{method:'POST',headers:{cookie,origin:web,'content-type':'application/json'},body:JSON.stringify({provider:'agentrouter-relay',key:'forward-client-ua',on:false})});
+  assert.equal(uaSave.status,200,await uaSave.text());
+  const uaOff = await post('codex_cli_rs/fixture-disabled');
+  assert.equal(uaOff.status,200,await uaOff.text());
+  assert.notEqual(userAgents.at(-1),'codex_cli_rs/fixture-disabled');
   mode = 'rate';
   const beforeRate = captures.length;
   const rejected = await post('codex_cli_rs/1.0', AbortSignal.timeout(95000)).catch(error => { throw new Error(`Host rate-limit check (${captures.length-beforeRate} actual sends): ${error.message}`); });
@@ -181,6 +202,7 @@ try {
   assert.equal(captures.length-beforeRate,3,'Delegated host retries must also respect the shared cap');
   assert.ok(captures.slice(beforeRate).every(row => row.enabled === 'false'));
   console.log(`HOST: switch off, HTTP 429, ${captures.length-beforeRate} actual upstream sends`);
+  assert.equal(listRequests,0,'No upstream model list needed throughout this run');
 } finally {
   if (gateway && gateway.exitCode === null) gateway.kill();
   if (ended) await ended;
