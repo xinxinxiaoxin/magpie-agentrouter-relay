@@ -21,6 +21,7 @@ const fixture = path.join(directory, 'fixture');
 const captures = [];
 const userAgents = [];
 const sentModels = [];
+const sentEfforts = [];
 let mode = 'pass';
 let disconnected = false;
 let limited = 0;
@@ -44,9 +45,10 @@ const upstream = http.createServer(async (req, res) => {
     return res.end(JSON.stringify({ error: { message: 'Too many requests', code: 'rate_limit_exceeded' } }));
   }
   if (req.url !== '/v1/responses') { res.writeHead(404); return res.end(); }
-  const {model,stream} = JSON.parse(text);
+  const {model,stream,reasoning} = JSON.parse(text);
   sentModels.push(model);
-  if (!['gpt-6.1-sol','fixture-model'].includes(model)) { res.writeHead(400); return res.end(); }
+  sentEfforts.push(reasoning?.effort);
+  if (!['gpt-6.1-sol','future-known-fixture','fixture-model'].includes(model)) { res.writeHead(400); return res.end(); }
   const item = { id:'msg_fixture',type:'message',role:'assistant',content:[{type:'output_text',text:'fixture OK'}] };
   const response = {id:'resp_fixture',object:'response',status:'completed',model,output:[item]};
   if (stream) {
@@ -99,7 +101,11 @@ try {
   }
   await writeFile(path.join(fixture,'provider.mjs'), `import {createProvider} from './lib/provider.mjs'; import {createTransport} from './lib/transport.mjs'; const relay=createTransport(fetch,{maxAttempts:3}); export default createProvider('http://127.0.0.1:${fixturePort}/v1', (request, context) => { request.headers.set('fixture-caller',context.caller); request.headers.set('fixture-enabled',String(context.retryRateLimit)); return relay(request,context); });`);
   await json(path.join(config,'settings.json'), { sessionReads: { asked:true, all:false, agents:{} } });
-  await json(path.join(config,'providers.json'), {providers:[{id:'agentrouter-relay',models:['gpt-6.1-sol','fixture-model']}]});
+  const catalogDir = path.join(env.XDG_CACHE_HOME,'magpie');
+  await mkdir(catalogDir,{recursive:true});
+  const levels = {'gpt-6.1-sol':['low','medium','high','xhigh','max'],'future-known-fixture':['low','high']};
+  await json(path.join(catalogDir,'models.json'),{openai:{id:'openai',models:Object.fromEntries(Object.entries(levels).map(([id,values])=>[id,{id,reasoning:true,reasoning_options:[{type:'effort',values}]}]))}});
+  await json(path.join(config,'providers.json'), {providers:[{id:'agentrouter-relay',models:['gpt-6.1-sol','fixture-model','future-known-fixture']}]});
   await cli('plugin','add',fixture);
   gateway = spawn(magpie,['serve',`--web=${new URL(web).host}`], { cwd:directory, env, windowsHide:true, stdio:['ignore','pipe','pipe'] });
   ended = once(gateway,'close');
@@ -119,6 +125,22 @@ try {
   };
   assert.equal((await signin('',{method:0,key:'fixture-only'})).state,'done');
   assert.equal(listRequests,0,'API Key sign-in must not prefetch /v1/models');
+  const codexList = await fetch(`http://${addr}/v1/codex/models?client_version=0.167.0`);
+  assert.equal(codexList.status,200);
+  const {models: picker} = await codexList.json();
+  for (const [model,values] of Object.entries(levels)) {
+    const entry = picker.find(row=>row.slug===`agentrouter-relay/${model}`);
+    for (const value of values) assert.ok(entry?.supported_reasoning_levels?.some(row=>row.effort===value),`${model} missing ${value} in Codex picker: ${JSON.stringify(entry?.supported_reasoning_levels)}`);
+  }
+  const unknown = picker.find(row=>row.slug==='agentrouter-relay/fixture-model');
+  assert.ok(unknown?.supported_reasoning_levels?.some(row=>row.effort==='high'),'A manually added unknown model should use Magpie’s Codex defaults');
+  for (const [model,effort] of [['gpt-6.1-sol','xhigh'],['future-known-fixture','high'],['fixture-model','high'],['fixture-model',undefined]]) {
+    const reply = await fetch(`http://${addr}/v1/responses`,{method:'POST',headers:{'content-type':'application/json','user-agent':'codex_cli_rs/1.0'},body:JSON.stringify({model:`agentrouter-relay/${model}`,input:'fixture',...(effort ? {reasoning:{effort}} : {})}),signal:AbortSignal.timeout(15000)});
+    assert.equal(reply.status,200,await reply.text());
+    assert.equal(sentModels.at(-1),model);
+    assert.equal(sentEfforts.at(-1),effort,`${model}: upstream reasoning effort`);
+  }
+  console.log('PASS: Magpie model efforts for declared and manually added models; selected and default requests on the wire');
   for (const model of ['gpt-6.1-sol','fixture-model']) {
     const before = captures.length;
     const messages = await fetch(`http://${addr}/v1/messages`,{method:'POST',headers:{'content-type':'application/json','anthropic-version':'2023-06-01','user-agent':'claude-cli/1.0'},body:JSON.stringify({model:`agentrouter-relay/${model}`,max_tokens:64,messages:[{role:'user',content:'fixture'}]}),signal:AbortSignal.timeout(15000)});
@@ -140,7 +162,7 @@ try {
   assert.equal((await signin('',{inputs:step.inputs})).state,'done');
   const listed = JSON.parse(await cli('plugin','--json'));
   const added = listed.providers?.find(provider => provider.id === 'agentrouter-relay');
-  assert.ok(added?.models?.some(model => model.id === 'gpt-6.1-sol'));
+  assert.equal(added?.models?.find(model => model.id === 'gpt-6.1-sol')?.reasoning,true);
   assert.equal(added.options.find(option => option.key === 'retry-rate-limit')?.default, true);
   assert.equal(added.options.find(option => option.key === 'forward-client-ua')?.default, true);
   const quota = await cli('quota','agentrouter-relay','--json');
