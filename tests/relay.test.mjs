@@ -177,6 +177,50 @@ test('a shorter per-request retry budget does not wait past a Retry-After',async
   assert.equal(sends,1);
 });
 
+test('the retry admission budget does not abort a healthy slow first response',async () => {
+  const relay=createTransport(async (_url,{signal})=>{ await delay(1200,undefined,{signal}); return ok(); });
+  const result=await relay(client(modelBody,[randomUUID(),1]),{caller:'codex',retryRateLimit:true,retryBudgetMs:1000});
+  assert.equal(result.status,200);
+});
+
+test('503 and host-delegated 429 do not send again before Retry-After',async () => {
+  for(const [status,code,enabled] of [[503,'service_unavailable',true],[429,'rate_limit_exceeded',false]]) {
+    const run=fixture([()=>error(status,code,'busy',{'retry-after':'3600','x-request-id':'fixture-wait'}),ok]);
+    for (const round of [1,2]) {
+      const result=await run.ask(modelBody,{enabled,round});
+      assert.equal(result.status,status);
+      assert.equal(result.headers.get('retry-after'),'3600');
+      assert.equal(result.headers.get('x-request-id'),'fixture-wait');
+      assert.equal((await result.json()).error.code,code);
+    }
+    assert.equal(run.sent.length,1);
+  }
+});
+
+test('a delegated retry keeps the first service tier even if the host changes it',async () => {
+  for(const [first,later] of [['priority',undefined],[undefined,'priority']]) {
+    const run=fixture([limit,ok]);
+    assert.equal((await run.ask({...modelBody,service_tier:first},{enabled:false})).status,429);
+    assert.equal((await run.ask({...modelBody,service_tier:later},{round:2,enabled:false})).status,200);
+    assert.deepEqual(run.sent.map(({body})=>body.service_tier),[first,first]);
+  }
+});
+
+test('HTTP, embedded and streamed Fast refusals do not trigger history recovery or a standard retry',async () => {
+  const rejection={code:'unsupported_parameter',param:'service_tier',message:'Unsupported parameter: service_tier'};
+  const body={...modelBody,input:history,service_tier:'priority'};
+  for(const response of [()=>Response.json({error:rejection},{status:400}),()=>Response.json({error:rejection}),()=>asEvents(started,{type:'response.failed',response:{error:rejection}})]) {
+    const run=fixture([response,ok]);
+    for(const round of [1,2]) {
+      const result=await run.ask(body,{round});
+      assert.equal(result.status,400);
+      assert.deepEqual((await result.json()).error,rejection);
+    }
+    assert.equal(run.sent.length,1);
+    assert.equal(run.sent[0].body.service_tier,'priority');
+  }
+});
+
 test('unknown SSE output cannot be discarded and replayed',async () => {
   const run=fixture([()=>asEvents(started,{type:'vendor.action',payload:{reserved:true}},rateEvent)]);
   assert.match(await (await run.ask()).text(),/vendor.action/);

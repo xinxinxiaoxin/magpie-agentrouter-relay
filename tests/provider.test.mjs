@@ -3,6 +3,17 @@ import test from 'node:test';
 import plugin from '../provider.mjs';
 import { createProvider } from '../lib/provider.mjs';
 
+test('Fast preserves model aliases, capabilities and reasoning variants and is only offered on Chat and Responses',async () => {
+  const {provider}=await plugin();
+  const model={id:'local-alias',name:'Local alias',api:{id:'vendor-id',npm:'@ai-sdk/openai'},limit:{context:65536},capabilities:{reasoning:false},variants:{low:{}}};
+  const anthropic={...model,api:{npm:'@ai-sdk/anthropic'}};
+  const google={...model,api:{npm:'@ai-sdk/google'}};
+  const chat={...model,api:{npm:'@ai-sdk/openai-compatible'}};
+  const listed=await provider.models({models:{'local-alias':model,anthropic,google,chat}});
+  assert.deepEqual(listed,{'local-alias':{...model,serviceTiers:['priority']},anthropic,google,chat:{...chat,serviceTiers:['priority']}});
+  assert.equal(model.serviceTiers,undefined);
+});
+
 test('unknown destinations and missing keys never reach the transport', async () => {
   const { auth } = await plugin();
   const transport = await auth.loader(async () => ({ type: 'api', key: '' }));

@@ -22,6 +22,7 @@ const captures = [];
 const userAgents = [];
 const sentModels = [];
 const sentEfforts = [];
+const sentTiers = [];
 const sentBudgets = [];
 let mode = 'pass';
 let disconnected = false;
@@ -42,18 +43,23 @@ const upstream = http.createServer(async (req, res) => {
   captures.push({ caller: req.headers['fixture-caller'], enabled: req.headers['fixture-enabled'], path: req.url });
   userAgents.push(req.headers['user-agent']);
   sentBudgets.push(Number(req.headers['fixture-budget']));
+  const {model,stream,reasoning,service_tier} = JSON.parse(text);
+  sentTiers.push(service_tier);
+  if (mode === 'tier-refused' && service_tier === 'priority') {
+    res.writeHead(400, {'content-type':'application/json'});
+    return res.end(JSON.stringify({error:{code:'unsupported_parameter',param:'service_tier',message:'Unsupported parameter: service_tier'}}));
+  }
   if (mode === 'hang') { res.once('close', () => { disconnected = true; }); return; }
   if (mode === 'rate' || (mode === 'recover' && ++limited <= 2)) {
     res.writeHead(429, { 'content-type': 'application/json', 'retry-after': '1' });
     return res.end(JSON.stringify({ error: { message: 'Too many requests', code: 'rate_limit_exceeded' } }));
   }
   if (req.url !== '/v1/responses') { res.writeHead(404); return res.end(); }
-  const {model,stream,reasoning} = JSON.parse(text);
   sentModels.push(model);
   sentEfforts.push(reasoning?.effort);
-  if (!['gpt-6.1-sol','future-known-fixture','fixture-model'].includes(model)) { res.writeHead(400); return res.end(); }
+  if (!['gpt-6.1-sol','future-known-fixture','fixture-model','added-after-login'].includes(model)) { res.writeHead(400); return res.end(); }
   const item = { id:'msg_fixture',type:'message',role:'assistant',content:[{type:'output_text',text:'fixture OK'}] };
-  const response = {id:'resp_fixture',object:'response',status:'completed',model,output:[item]};
+  const response = {id:'resp_fixture',object:'response',status:'completed',model,output:[item],service_tier:'default'};
   if (stream) {
     res.writeHead(200,{'content-type':'text/event-stream','x-request-id':'fixture-stream'});
     const events = [
@@ -104,6 +110,8 @@ try {
   }
   await writeFile(path.join(fixture,'provider.mjs'), `import {createProvider} from './lib/provider.mjs'; import {createTransport} from './lib/transport.mjs'; const relay=createTransport(fetch,{maxAttempts:3}); export default createProvider('http://127.0.0.1:${fixturePort}/v1', (request, context) => { request.headers.set('fixture-caller',context.caller); request.headers.set('fixture-enabled',String(context.retryRateLimit)); request.headers.set('fixture-budget',String(context.retryBudgetMs)); return relay(request,context); });`);
   await json(path.join(config,'settings.json'), { sessionReads: { asked:true, all:false, agents:{} } });
+  await mkdir(path.join(home,'.codex'),{recursive:true});
+  await writeFile(path.join(home,'.codex','config.toml'),'model = "gpt-6.1-sol"\n');
   const catalogDir = path.join(env.XDG_CACHE_HOME,'magpie');
   await mkdir(catalogDir,{recursive:true});
   const levels = {'gpt-6.1-sol':['low','medium','high','xhigh','max'],'future-known-fixture':['low','high']};
@@ -120,6 +128,13 @@ try {
   const login = await fetch(`${web}/?k=${env.MAGPIE_WEB_KEY}`,{ redirect:'manual' });
   const cookie = login.headers.getSetCookie()[0]?.split(';')[0];
   assert.ok(cookie,'Isolated settings page did not establish a session');
+  const webAPI = async (route,body) => {
+    const response = await fetch(`${web}/api/${route}`,{method:body ? 'POST' : 'GET',headers:{cookie,origin:web,'content-type':'application/json'},body:body && JSON.stringify(body)});
+    const text = await response.text();
+    assert.equal(response.status,200,text);
+    return JSON.parse(text);
+  };
+  const setFast = (model,fast) => webAPI('agent-fast',{for:'codex',ref:`agentrouter-relay/${model}`,fast});
   const signin = async (suffix, fields) => {
     const response = await fetch(`${web}/api/plugin-signin${suffix}`,{method:'POST',headers:{cookie,origin:web,'content-type':'application/json'},body:JSON.stringify({provider:'agentrouter-relay',method:1,...fields})});
     const text = await response.text();
@@ -137,11 +152,21 @@ try {
   }
   const unknown = picker.find(row=>row.slug==='agentrouter-relay/fixture-model');
   assert.ok(unknown?.supported_reasoning_levels?.some(row=>row.effort==='high'),'A manually added unknown model should use Magpie’s Codex defaults');
+  const fastModels = ['gpt-6.1-sol','future-known-fixture','fixture-model'];
+  const pickerState = await webAPI('state');
+  const codexFields = pickerState.agents.find(agent=>agent.id==='codex')?.fields ?? [];
+  const controls = codexFields.flatMap(field => field.list ? pickerState.optionLists[field.list-1].map(index=>pickerState.options[index]) : field.options ?? []);
+  for (const model of fastModels) {
+    const entry = picker.find(row=>row.slug===`agentrouter-relay/${model}`);
+    assert.ok(entry?.service_tiers?.some(tier=>tier.id==='priority'),`${model}: missing Fast in the Codex model list`);
+    assert.ok(controls.some(option=>option.ref===entry.slug && ['*','codex'].includes(option.fastFor) && !option.run),`${model}: missing the native lightning control`);
+  }
   for (const [model,effort] of [['gpt-6.1-sol','xhigh'],['future-known-fixture','high'],['fixture-model','high'],['fixture-model',undefined]]) {
     const reply = await fetch(`http://${addr}/v1/responses`,{method:'POST',headers:{'content-type':'application/json','user-agent':'codex_cli_rs/1.0'},body:JSON.stringify({model:`agentrouter-relay/${model}`,input:'fixture',...(effort ? {reasoning:{effort}} : {})}),signal:AbortSignal.timeout(15000)});
     assert.equal(reply.status,200,await reply.text());
     assert.equal(sentModels.at(-1),model);
     assert.equal(sentEfforts.at(-1),effort,`${model}: upstream reasoning effort`);
+    assert.notEqual(sentTiers.at(-1),'priority',`${model}: Fast must not be enabled by default`);
   }
   console.log('PASS: Magpie model efforts for declared and manually added models; selected and default requests on the wire');
   for (const [model,ua] of [['gpt-6.1-sol','Mozilla/5.0 Claude/fixture'],['fixture-model','claude-cli/1.0']]) {
@@ -172,7 +197,37 @@ try {
   assert.match(quota,/\$1\.25/,'Expected the fixture account balance via the Magpie quota interface');
   assert.match(quota,/\$0\.50/,'Expected the cumulative spend as a separate reading');
   console.log('PASS: Magpie reports the isolated account balance using the separate site credential');
-  const post = (ua, signal = AbortSignal.timeout(15000)) => fetch(`http://${addr}/v1/responses`, { method:'POST', headers:{ 'content-type':'application/json','user-agent':ua }, body:JSON.stringify({ model:'agentrouter-relay/fixture-model',input:[{role:'user',content:'fixture'}],stream:false }), signal });
+  const post = (ua, signal = AbortSignal.timeout(15000), fields = {}) => fetch(`http://${addr}/v1/responses`, { method:'POST', headers:{ 'content-type':'application/json','user-agent':ua }, body:JSON.stringify({ model:'agentrouter-relay/fixture-model',input:[{role:'user',content:'fixture'}],stream:false,...fields }), signal });
+  for (const model of fastModels) {
+    await setFast(model,true);
+    const fields = {model:`agentrouter-relay/${model}`,reasoning:{effort:'high'}};
+    const fast = await post('codex_cli_rs/1.0',undefined,fields);
+    const answer = await fast.text();
+    assert.equal(fast.status,200,answer);
+    assert.equal(JSON.parse(answer).service_tier,'default','Report the tier returned by the upstream, not the tier requested');
+    assert.equal(sentTiers.at(-1),'priority');
+    assert.equal(sentEfforts.at(-1),'high');
+    await setFast(model,false);
+    const normal = await post('codex_cli_rs/1.0',undefined,fields);
+    assert.equal(normal.status,200,await normal.text());
+    assert.notEqual(sentTiers.at(-1),'priority');
+  }
+  console.log('PASS: Magpie native Fast switch controls upstream tier on preset and hand-entered models');
+  const chatTier = await fetch(`http://${addr}/v1/chat/completions`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({model:'agentrouter-relay/fixture-model',service_tier:'priority',messages:[{role:'user',content:'fixture'}]}),signal:AbortSignal.timeout(15000)});
+  assert.equal(chatTier.status,200,await chatTier.text());
+  assert.equal(sentTiers.at(-1),'priority','Explicit Chat tier survives conversion even with the Magpie switch off');
+  await webAPI('provider/save',{id:'agentrouter-relay',from:'agentrouter-relay',models:[...fastModels,'added-after-login'],passHeaders:['User-Agent']});
+  const refreshed = await webAPI('provider/models',{id:'agentrouter-relay'});
+  assert.ok(refreshed.provider.models.some(model=>model.id==='added-after-login' && model.canFast && model.on));
+  await setFast('added-after-login',true);
+  const addedReply = await post('codex_cli_rs/1.0',undefined,{model:'agentrouter-relay/added-after-login'});
+  assert.equal(addedReply.status,200,await addedReply.text());
+  assert.equal(sentTiers.at(-1),'priority');
+  await webAPI('provider/save',{id:'agentrouter-relay',from:'agentrouter-relay',models:fastModels,passHeaders:['User-Agent']});
+  const removed = await webAPI('provider/models',{id:'agentrouter-relay'});
+  assert.ok(!removed.provider.models.some(model=>model.id==='added-after-login' && model.on));
+  assert.deepEqual(removed.provider.models.filter(model=>model.on).map(model=>model.id).sort(),fastModels.toSorted());
+  console.log('PASS: model added in the running provider editor gains Fast on local refresh');
   for (const [agent,ua] of [['codex','codex_cli_rs/1.0'],['claude','claude-cli/1.0']]) {
     const before = captures.length;
     const response = await post(ua);
@@ -189,11 +244,25 @@ try {
   assert.match(await streamed.text(),/fixture OK/);
   assert.equal(streamed.headers.get('x-request-id'),'fixture-stream');
   mode = 'recover';
+  await setFast('fixture-model',true);
   const beforeRecover = captures.length;
   const recovered = await post('codex_cli_rs/1.0');
   assert.equal(recovered.status,200,await recovered.text());
   assert.equal(captures.length-beforeRecover,3);
   assert.deepEqual(userAgents.slice(beforeRecover),Array(3).fill('codex_cli_rs/1.0'));
+  assert.deepEqual(sentTiers.slice(beforeRecover),Array(3).fill('priority'));
+  mode = 'tier-refused';
+  const beforeRefusal = captures.length;
+  const refused = await post('codex_cli_rs/1.0');
+  const refusal = await refused.text();
+  assert.equal(refused.status,400,refusal);
+  assert.match(refusal,/service_tier/);
+  assert.deepEqual(sentTiers.slice(beforeRefusal),['priority'],'An unsupported tier must not be retried or downgraded');
+  mode = 'pass';
+  const afterRefusal = await post('codex_cli_rs/1.0');
+  assert.equal(afterRefusal.status,200,await afterRefusal.text());
+  assert.equal(sentTiers.at(-1),'priority','A refusal must not silently turn off Fast for the next request');
+  await setFast('fixture-model',false);
   console.log('PASS: two rate limits then success, three actual sends');
   mode = 'rate';
   const beforeCap = captures.length;
@@ -241,6 +310,14 @@ try {
   const panelHtml = await fetch(`${web}${panel.url}`,{headers:{cookie}});
   assert.equal(panelHtml.status,200);
   assert.match(await panelHtml.text(),/retry-budget/);
+  await webAPI('plugin-pages/options',{spec:panel.spec,options:{retryBudgetSeconds:1}});
+  const beforeConverted = captures.length;
+  const converted = await fetch(`http://${addr}/v1/messages`,{method:'POST',headers:{'content-type':'application/json','anthropic-version':'2023-06-01','user-agent':'claude-cli/1.0'},body:JSON.stringify({model:'agentrouter-relay/fixture-model',max_tokens:64,messages:[{role:'user',content:'fixture'}]}),signal:AbortSignal.timeout(15000)});
+  assert.equal(converted.status,429);
+  assert.match(await converted.text(),/Too many requests/i);
+  assert.equal(captures.length-beforeConverted,1,'Converted Messages attempts must stop when the client request budget expires');
+  assert.equal(sentBudgets.at(-1),1000);
+  console.log('PASS: converted Messages cannot restart an exhausted host budget');
   const saveBudget = await fetch(`${web}/api/plugin-pages/options`,{method:'POST',headers:{cookie,origin:web,'content-type':'application/json'},body:JSON.stringify({spec:panel.spec,options:{retryBudgetSeconds:60,fixtureOption:'preserve'}})});
   assert.equal(saveBudget.status,200,await saveBudget.text());
   mode = 'pass';

@@ -31,7 +31,7 @@ async function initialize() {
     status.textContent = '';
     busy(false);
   } catch (error) {
-    status.textContent = `读取失败：${error.message}。请关闭并重新打开供应商设置。`;
+    status.textContent = `读取失败：${error.message}。请重新打开「设置 → 插件」。`;
   }
 }
 
