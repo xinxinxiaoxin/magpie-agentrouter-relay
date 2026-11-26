@@ -24,7 +24,9 @@ magpie plugin add github:xinxinxiaoxin/magpie-agentrouter-relay
 
 **最长重试等待**：在「插件 → 已安装 → AG Relay → 选项」的 JSON 中填写 `{"retryBudgetSeconds": 60}`。支持 1 至 300 整数秒，默认 300 秒，同一条请求的后续宿主重试不会重新计时。沿用旧网关预留 30 秒给下一次发送的规则，设置得太短可能只发一次。它不是输出超时，不中途截断健康长回复。
 
-余额区分「未配置余额查询」「查询失败」和真实金额（包括 `$0.00`）。只填模型 Key 不会查询余额，站点余额查询失败不影响聊天。
+余额区分「未配置余额查询」「查询失败」和真实金额（包括 `$0.00`）。站点同时返回历史消耗时，喜鹊用量页单独显示账户累计消耗。只填模型 Key 不会查询余额，站点余额查询失败不影响聊天。
+
+[常用设置与同类插件对照](设置对照.md)：模型单价、上下文、输出长度、代理、重试和余额的入口，以及普通供应商和插件供应商的界面差别。
 
 ## 行为与限制
 
@@ -53,7 +55,7 @@ Node.js 24：`npm test`。Windows x64 隔离宿主验证使用已安装的喜鹊
 node tests/magpie-host.mjs <magpie.exe> <bun.exe>
 node tests/parity.mjs <旧版的relay-retry-proxy.mjs>
 npm pack --pack-destination .
-node tests/magpie-host.mjs <magpie.exe> <bun.exe> ./magpie-agentrouter-relay-0.1.0-rc.5.tgz
+node tests/magpie-host.mjs <magpie.exe> <bun.exe> ./magpie-agentrouter-relay-0.1.0-rc.6.tgz
 ```
 
 `parity` 核对旧源码哈希后另起测试进程，两边使用同一回环假上游，比较发送次数、实际请求体和客户端输出。对照脚本不是运行依赖。宿主测试使用独立配置、假账号和随机回环端口；带归档时先验证原包无凭据加载，再使用测试专用入口，把同一份包内实现接到可观测的假上游。持续 429 用缩小到 3 次的预算验收两层重试是否相乘。

@@ -30,7 +30,7 @@ const upstream = http.createServer(async (req, res) => {
   if (req.url === '/v1/models') { listRequests++; res.writeHead(401); return res.end(); }
   if (req.url === '/api/user/self') {
     if (req.headers.authorization !== 'fixture-site-token' || req.headers['new-api-user'] !== '42') { res.writeHead(401); return res.end(); }
-    return res.end(JSON.stringify({success:true,data:{quota:625000}}));
+    return res.end(JSON.stringify({success:true,data:{quota:'625000',used_quota:250000}}));
   }
   if (req.headers.authorization !== 'Bearer fixture-only' || req.headers['new-api-user']) { res.writeHead(403); return res.end(); }
   const chunks = [];
@@ -141,16 +141,16 @@ try {
     assert.equal(sentEfforts.at(-1),effort,`${model}: upstream reasoning effort`);
   }
   console.log('PASS: Magpie model efforts for declared and manually added models; selected and default requests on the wire');
-  for (const model of ['gpt-6.1-sol','fixture-model']) {
+  for (const [model,ua] of [['gpt-6.1-sol','Mozilla/5.0 Claude/fixture'],['fixture-model','claude-cli/1.0']]) {
     const before = captures.length;
-    const messages = await fetch(`http://${addr}/v1/messages`,{method:'POST',headers:{'content-type':'application/json','anthropic-version':'2023-06-01','user-agent':'claude-cli/1.0'},body:JSON.stringify({model:`agentrouter-relay/${model}`,max_tokens:64,messages:[{role:'user',content:'fixture'}]}),signal:AbortSignal.timeout(15000)});
+    const messages = await fetch(`http://${addr}/v1/messages`,{method:'POST',headers:{'content-type':'application/json','anthropic-version':'2023-06-01','user-agent':ua},body:JSON.stringify({model:`agentrouter-relay/${model}`,max_tokens:64,messages:[{role:'user',content:'fixture'}]}),signal:AbortSignal.timeout(15000)});
     const text = await messages.text();
     assert.equal(messages.status,200,text);
     assert.match(text,/fixture OK/);
     assert.equal(JSON.parse(text).content[0].text,'fixture OK');
     assert.equal(sentModels.at(-1),model);
     assert.deepEqual(captures.slice(before),[{caller:'claude',enabled:'true',path:'/v1/responses'}]);
-    assert.equal(userAgents.at(-1),'claude-cli/1.0');
+    assert.equal(userAgents.at(-1),ua);
   }
   console.log('PASS: plain API key, Claude Messages to Responses, declared and hand-entered model IDs');
   let step = await signin('/prompt',{inputs:{}});
@@ -167,6 +167,7 @@ try {
   assert.equal(added.options.find(option => option.key === 'forward-client-ua')?.default, true);
   const quota = await cli('quota','agentrouter-relay','--json');
   assert.match(quota,/\$1\.25/,'Expected the fixture account balance via the Magpie quota interface');
+  assert.match(quota,/\$0\.50/,'Expected the cumulative spend as a separate reading');
   console.log('PASS: Magpie reports the isolated account balance using the separate site credential');
   const post = (ua, signal = AbortSignal.timeout(15000)) => fetch(`http://${addr}/v1/responses`, { method:'POST', headers:{ 'content-type':'application/json','user-agent':ua }, body:JSON.stringify({ model:'agentrouter-relay/fixture-model',input:[{role:'user',content:'fixture'}],stream:false }), signal });
   for (const [agent,ua] of [['codex','codex_cli_rs/1.0'],['claude','claude-cli/1.0']]) {

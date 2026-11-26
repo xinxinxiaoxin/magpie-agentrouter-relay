@@ -135,17 +135,37 @@ test('balance sign-in asks for and returns the separate model key',async () => {
 
 test('balance is optional and uses the site credential, never the model key',async () => {
   assert.deepEqual(await readBalance('https://example.invalid/v1',{type:'api',key:'model'}),{balance:'未配置余额查询',windows:[]});
-  let captured, quota=625000;
-  const server=http.createServer((req,res)=>{ captured=[req.url,req.headers.authorization,req.headers['new-api-user']];res.end(JSON.stringify({success:true,data:{quota}})); });
+  let captured, quota=625000, usedQuota;
+  const server=http.createServer((req,res)=>{ captured=[req.url,req.headers.authorization,req.headers['new-api-user']];res.end(JSON.stringify({success:true,data:{quota,used_quota:usedQuota}})); });
   server.listen(0,'127.0.0.1'); await once(server,'listening');
   try {
     const {metadata}=await balanceMethod.authorize({modelKey:'model',userId:'42',balanceToken:'site-only'});
     assert.equal((await readBalance(`http://127.0.0.1:${server.address().port}/v1`,{key:'model',metadata})).balance,'$1.25');
     assert.deepEqual(captured,['/api/user/self','site-only','42']);
+    quota='625000'; usedQuota='250000';
+    const withSpend = await readBalance(`http://127.0.0.1:${server.address().port}/v1`,{metadata});
+    assert.equal(withSpend.balance,'$1.25');
+    assert.deepEqual(withSpend.windows,[{name:'账户累计消耗',display:'$0.50',aside:true}]);
+    quota=' '; usedQuota=undefined;
+    assert.equal((await readBalance(`http://127.0.0.1:${server.address().port}/v1`,{metadata})).balance,'查询失败');
     quota=0;
     assert.equal((await readBalance(`http://127.0.0.1:${server.address().port}/v1`,{metadata})).balance,'$0.00');
     quota=null;
     assert.equal((await readBalance(`http://127.0.0.1:${server.address().port}/v1`,{metadata})).balance,'查询失败');
+  } finally { server.closeAllConnections(); await new Promise(resolve=>server.close(resolve)); }
+});
+
+test('balance failures distinguish site authentication, access refusal and an HTML page',async () => {
+  let status=401;
+  const server=http.createServer((_req,res)=>{res.writeHead(status,{'Content-Type':'text/html; charset=utf-8'});res.end('<html></html>');});
+  server.listen(0,'127.0.0.1'); await once(server,'listening');
+  try {
+    for(const [code,expected] of [[401,/401.*系统访问令牌/],[403,/403.*拒绝/],[200,/网页/]]) {
+      status=code;
+      const result=await readBalance(`http://127.0.0.1:${server.address().port}/v1`,{metadata:{userId:'42',balanceToken:'site-only'}});
+      assert.equal(result.balance,'查询失败');
+      assert.match(result.error,expected);
+    }
   } finally { server.closeAllConnections(); await new Promise(resolve=>server.close(resolve)); }
 });
 
