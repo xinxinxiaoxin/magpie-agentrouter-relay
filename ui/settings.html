@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AG Relay 恢复设置</title>
+  <script src="_magpie/bridge.js"></script>
+  <script src="settings.js" defer></script>
+  <link rel="stylesheet" href="settings.css">
+</head>
+<body>
+  <label for="retry-budget">最长重试等待（秒）</label>
+  <div class="controls">
+    <input id="retry-budget" type="number" min="1" max="300" step="1" required value="300" disabled aria-describedby="budget-help">
+    <button id="save" type="button" disabled>保存</button>
+    <button id="reset" type="button" disabled>恢复 300 秒</button>
+  </div>
+  <p id="budget-help">1–300 秒。限制失败后再次发送的时间，不截断正在正常输出的回复。时间太短时可能只发送一次。</p>
+  <p id="status" role="status" aria-live="polite">正在读取设置…</p>
+</body>
+</html>

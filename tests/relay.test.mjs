@@ -188,3 +188,21 @@ test('explicit incomplete is a terminal outcome, not an empty stream',async () =
   assert.match(await (await run.ask()).text(),/response.incomplete/);
   assert.equal(run.sent.length,1);
 });
+
+test('streaming replies preserve upstream diagnostics and remove body encoding headers',async () => {
+  const run=fixture([()=>{
+    const response=asEvents(started,textEvent,done);
+    response.headers.set('x-request-id','fixture-request');
+    response.headers.set('x-magpie-sign-in','kept');
+    response.headers.set('content-encoding','gzip');
+    response.headers.set('content-length','123');
+    return response;
+  }]);
+  const response=await run.ask();
+  const text=await response.text();
+  assert.match(text,/visible/);
+  assert.equal(response.headers.get('x-request-id'),'fixture-request');
+  assert.equal(response.headers.get('x-magpie-sign-in'),'kept');
+  assert.equal(response.headers.get('content-encoding'),null);
+  assert.equal(response.headers.get('content-length'),null);
+});

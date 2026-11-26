@@ -22,6 +22,7 @@ const captures = [];
 const userAgents = [];
 const sentModels = [];
 const sentEfforts = [];
+const sentBudgets = [];
 let mode = 'pass';
 let disconnected = false;
 let limited = 0;
@@ -33,12 +34,14 @@ const upstream = http.createServer(async (req, res) => {
     return res.end(JSON.stringify({success:true,data:{quota:'625000',used_quota:250000}}));
   }
   if (req.headers.authorization !== 'Bearer fixture-only' || req.headers['new-api-user']) { res.writeHead(403); return res.end(); }
+  if (mode === 'unauthorized') { res.writeHead(401,{'content-type':'application/json'}); return res.end(JSON.stringify({error:{message:'Invalid API key',code:'invalid_api_key'}})); }
   const chunks = [];
   for await (const chunk of req) chunks.push(chunk);
   const text = Buffer.concat(chunks).toString();
   if (text.includes('_ag_relay_request')) { res.writeHead(400); return res.end('internal request marker leaked'); }
   captures.push({ caller: req.headers['fixture-caller'], enabled: req.headers['fixture-enabled'], path: req.url });
   userAgents.push(req.headers['user-agent']);
+  sentBudgets.push(Number(req.headers['fixture-budget']));
   if (mode === 'hang') { res.once('close', () => { disconnected = true; }); return; }
   if (mode === 'rate' || (mode === 'recover' && ++limited <= 2)) {
     res.writeHead(429, { 'content-type': 'application/json', 'retry-after': '1' });
@@ -52,7 +55,7 @@ const upstream = http.createServer(async (req, res) => {
   const item = { id:'msg_fixture',type:'message',role:'assistant',content:[{type:'output_text',text:'fixture OK'}] };
   const response = {id:'resp_fixture',object:'response',status:'completed',model,output:[item]};
   if (stream) {
-    res.writeHead(200,{'content-type':'text/event-stream'});
+    res.writeHead(200,{'content-type':'text/event-stream','x-request-id':'fixture-stream'});
     const events = [
       {type:'response.created',response:{...response,status:'in_progress',output:[]}},
       {type:'response.output_item.added',output_index:0,item:{...item,content:[]}},
@@ -97,9 +100,9 @@ try {
     assert.ok(initial.providers?.some(entry => entry.id === 'agentrouter-relay'));
     console.log(`PASS: unmodified ${manifest.version} archive loads without credentials`);
   } else {
-    for (const file of ['lib','package.json','relay.middleware.mjs']) await cp(path.join(root,file),path.join(fixture,file),{recursive:true});
+    for (const file of ['lib','ui','package.json','relay.middleware.mjs']) await cp(path.join(root,file),path.join(fixture,file),{recursive:true});
   }
-  await writeFile(path.join(fixture,'provider.mjs'), `import {createProvider} from './lib/provider.mjs'; import {createTransport} from './lib/transport.mjs'; const relay=createTransport(fetch,{maxAttempts:3}); export default createProvider('http://127.0.0.1:${fixturePort}/v1', (request, context) => { request.headers.set('fixture-caller',context.caller); request.headers.set('fixture-enabled',String(context.retryRateLimit)); return relay(request,context); });`);
+  await writeFile(path.join(fixture,'provider.mjs'), `import {createProvider} from './lib/provider.mjs'; import {createTransport} from './lib/transport.mjs'; const relay=createTransport(fetch,{maxAttempts:3}); export default createProvider('http://127.0.0.1:${fixturePort}/v1', (request, context) => { request.headers.set('fixture-caller',context.caller); request.headers.set('fixture-enabled',String(context.retryRateLimit)); request.headers.set('fixture-budget',String(context.retryBudgetMs)); return relay(request,context); });`);
   await json(path.join(config,'settings.json'), { sessionReads: { asked:true, all:false, agents:{} } });
   const catalogDir = path.join(env.XDG_CACHE_HOME,'magpie');
   await mkdir(catalogDir,{recursive:true});
@@ -181,6 +184,10 @@ try {
   const generic = await post('magpie/0.1.4777');
   assert.equal(generic.status,200,await generic.text());
   assert.equal(userAgents.at(-1),'magpie/0.1.4777');
+  const streamed = await fetch(`http://${addr}/v1/responses`,{method:'POST',headers:{'content-type':'application/json','user-agent':'codex_cli_rs/1.0'},body:JSON.stringify({model:'agentrouter-relay/fixture-model',input:'fixture',stream:true}),signal:AbortSignal.timeout(15000)});
+  assert.equal(streamed.status,200);
+  assert.match(await streamed.text(),/fixture OK/);
+  assert.equal(streamed.headers.get('x-request-id'),'fixture-stream');
   mode = 'recover';
   const beforeRecover = captures.length;
   const recovered = await post('codex_cli_rs/1.0');
@@ -226,6 +233,42 @@ try {
   assert.ok(captures.slice(beforeRate).every(row => row.enabled === 'false'));
   console.log(`HOST: switch off, HTTP 429, ${captures.length-beforeRate} actual upstream sends`);
   assert.equal(listRequests,0,'No upstream model list needed throughout this run');
+  const panelsResponse = await fetch(`${web}/api/plugin-panels`,{headers:{cookie}});
+  assert.equal(panelsResponse.status,200);
+  const panels = await panelsResponse.json();
+  const panel = panels.find(row=>row.slot==='settings' && row.name==='magpie-agentrouter-relay');
+  assert.ok(panel,'Settings panel should be listed by Magpie');
+  const panelHtml = await fetch(`${web}${panel.url}`,{headers:{cookie}});
+  assert.equal(panelHtml.status,200);
+  assert.match(await panelHtml.text(),/retry-budget/);
+  const saveBudget = await fetch(`${web}/api/plugin-pages/options`,{method:'POST',headers:{cookie,origin:web,'content-type':'application/json'},body:JSON.stringify({spec:panel.spec,options:{retryBudgetSeconds:60,fixtureOption:'preserve'}})});
+  assert.equal(saveBudget.status,200,await saveBudget.text());
+  mode = 'pass';
+  const budgetReply = await post('codex_cli_rs/1.0');
+  assert.equal(budgetReply.status,200,await budgetReply.text());
+  assert.equal(sentBudgets.at(-1),60000);
+  console.log('PASS: settings panel is served and saved options reach subsequent requests');
+  if (process.argv.includes('--inspect-ui')) {
+    await json(path.join(parent,'panel-review.json'),{url:`${web}/?k=${env.MAGPIE_WEB_KEY}`,directory});
+    console.log('UI_REVIEW: press Enter after inspecting the provider panel');
+    await once(process.stdin,'data');
+    process.stdin.pause();
+    const pluginOptions = JSON.parse(await readFile(path.join(config,'plugins.json'),'utf8')).plugins.find(row=>row.spec===panel.spec).options;
+    assert.equal(pluginOptions.fixtureOption,'preserve');
+    assert.equal(pluginOptions.retryBudgetSeconds,120);
+    const panelReply = await post('codex_cli_rs/1.0');
+    assert.equal(panelReply.status,200,await panelReply.text());
+    assert.equal(sentBudgets.at(-1),120000);
+    console.log('PASS: panel saves preserve other options and affect the next request');
+  }
+  mode = 'unauthorized';
+  const denied = await post('codex_cli_rs/1.0');
+  assert.equal(denied.status,401,await denied.text());
+  const accountState = async () => JSON.parse(await readFile(path.join(config,'logins.json'),'utf8')).find(row=>row.agent==='plugin:agentrouter-relay');
+  assert.ok((await accountState())?.lapsed,'A model key rejected by the upstream must be marked');
+  assert.match(await cli('quota','agentrouter-relay','--json'),/\$1\.25/);
+  assert.ok((await accountState())?.lapsed,'A successful site balance read must not clear the rejected model key');
+  console.log('PASS: site balance and model key sign-in state remain independent');
 } finally {
   if (gateway && gateway.exitCode === null) gateway.kill();
   if (ended) await ended;

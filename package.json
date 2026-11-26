@@ -1,6 +1,6 @@
 {
   "name": "magpie-agentrouter-relay",
-  "version": "0.1.0-rc.6",
+  "version": "0.1.0-rc.7",
   "private": true,
   "description": "AgentRouter 单账号 Magpie Provider",
   "repository": {"type":"git","url":"git+https://github.com/xinxinxiaoxin/magpie-agentrouter-relay.git"},
@@ -8,7 +8,7 @@
   "type": "module",
   "main": "./provider.mjs",
   "license": "MIT",
-  "files": ["provider.mjs", "relay.middleware.mjs", "lib", "logo.png", "README.md", "设置对照.md", "LICENSE", "THIRD_PARTY_NOTICES.md"],
+  "files": ["provider.mjs", "relay.middleware.mjs", "lib", "ui", "logo.png", "README.md", "设置对照.md", "官方接口核对.md", "LICENSE", "THIRD_PARTY_NOTICES.md"],
   "magpie": {
     "name":"AgentRouter · AG Relay",
     "icon":"https://raw.githubusercontent.com/xinxinxiaoxin/magpie-agentrouter-relay/main/logo.png",
@@ -17,7 +17,8 @@
       "zh":"AgentRouter 单账号 Provider：有界重试、Responses 历史修复、Claude/Codex 分流和可选余额查询。"
     },
     "middleware":"./relay.middleware.mjs",
-    "options":{"retryBudgetSeconds":300}
+    "options":{"retryBudgetSeconds":300},
+    "panels":[{"slot":"settings","file":"ui/settings.html","title":"AG Relay 恢复设置"}]
   },
   "scripts": {"test": "node --test tests/*.test.mjs", "test:host": "node tests/magpie-host.mjs"},
   "keywords": ["magpie-plugin", "opencode-plugin", "provider", "agentrouter"]

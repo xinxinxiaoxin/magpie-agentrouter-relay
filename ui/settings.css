@@ -1,0 +1,7 @@
+body { margin: 0; padding: 12px; }
+label { display: block; font-weight: 600; margin-bottom: 10px; }
+.controls { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+input { width: 110px; }
+p { margin: 10px 0 0; line-height: 1.5; }
+#budget-help { opacity: .75; }
+#status { min-height: 1.5em; }
